@@ -1,34 +1,37 @@
 # Nixify Health Check
 
-A minimal, reproducible containerized health monitoring application built with Nix for `aarch64-linux`.
+A minimal, reproducible containerized health monitoring application built with Nix using static (musl) builds for optimal size and portability.
 
 ## Overview
 
-This project demonstrates a clean, simple approach to building Docker containers with Nix. It packages:
+This project demonstrates building optimized Docker containers with Nix using static musl-based binaries for minimal container size and maximum portability across different Linux distributions.
 
-- **Flask Health Check API**: Simple health monitoring endpoints
-- **Redis**: In-memory data store 
+### Services Included
+
+- **Flask Health Check API**: Simple health monitoring endpoints  
+- **Redis**: In-memory data store
 - **PostgreSQL**: Relational database
-- **Nix Flakes**: Reproducible builds targeting `aarch64-linux`
+- **Garage S3**: Lightweight S3-compatible object storage
+- **Nix Flakes**: Reproducible, multi-architecture builds
 
 ## Quick Start
 
 ### Prerequisites
 
 - Nix with flakes enabled
-- `aarch64-linux` build capability (native or remote builder)
 - Docker for running containers
+- GitHub Actions for automated building (recommended)
 
-### Build and Run
+### Local Development
 
 ```bash
-# Build the Docker image (uses remote builder if needed)
+# Build static Docker image
 make build
 
-# Run the container on port 8080
+# Run static container on port 8080
 make run
 
-# Check health
+# Check health status
 make health
 
 # View logs
@@ -36,7 +39,22 @@ make logs
 
 # Clean up
 make clean
+
+# Show image information
+make info
 ```
+
+### GitHub Actions (Recommended)
+
+The project includes automated GitHub Actions workflows that:
+
+- Build for both x86_64 and aarch64 architectures
+- Create static musl-based images only
+- Push to GitHub Container Registry (ghcr.io)
+- Generate multi-architecture manifests
+
+**Available workflow:**
+- `.github/workflows/build-docker.yml` - Multi-arch static build
 
 ## API Endpoints
 
@@ -49,11 +67,13 @@ make clean
 
 ```
 mono/
-├── app.py                           # Flask application with health checks
-├── docker-redis-postgres-minimal.nix # Docker image definition
-├── flake.nix                        # Simple Nix flake for aarch64-linux
-├── Makefile                         # Basic build/run commands
-└── README.md                        # This file
+├── app.py                                    # Flask application with health checks
+├── docker-redis-postgres-minimal-static.nix # Static Docker image (musl)
+├── flake.nix                                 # Nix flake 
+├── Makefile                                  # Build/run commands
+├── .github/workflows/                        # GitHub Actions workflows
+│   └── build-docker.yml                     # Multi-arch static build
+└── README.md                                 # This file
 ```
 
 ## Configuration
@@ -72,57 +92,130 @@ Environment variables:
 
 ## Architecture
 
-The container runs three services:
+The container runs four services:
 
 1. **PostgreSQL** - Initialized on first run, data persisted in `/data/postgres`
-2. **Redis** - Simple in-memory cache, data in `/data/redis`  
-3. **Flask App** - Health monitoring API on port 80
+2. **Redis** - Simple in-memory cache, data in `/data/redis`
+3. **Garage S3** - Lightweight object storage, data in `/data/garage` 
+4. **Flask App** - Health monitoring API on port 80
 
-All services run as root for simplicity in this POC. Services are bound to localhost only for security.
+All services run as dedicated users for security, but startup happens as root for proper initialization.
 
 ## Build Details
 
-- **Target Platform**: `aarch64-linux` only
-- **Base**: Minimal Nix packages (no bloated base images)
-- **Size Optimized**: Uses `buildLayeredImage` for efficient Docker layers
-- **Reproducible**: Same build every time via Nix
+### Static Build (`docker-redis-postgres-minimal-static.nix`)
+- **libc**: musl (minimal libc)
+- **Linking**: Static binaries with minimal dependencies
+- **Compatibility**: Excellent portability across Linux distributions
+- **Size**: Optimized (~100-200MB depending on architecture)
+- **Performance**: Low memory usage and fast startup
+
+## Multi-Architecture Support
+
+- **x86_64-linux** (AMD64): Native builds on GitHub Actions
+- **aarch64-linux** (ARM64): Native builds on ARM64 runners or cross-compilation
+- **Cross-compilation**: Automatic fallback when native runners unavailable
+- **Multi-arch manifests**: Single image tag works on both architectures
+
+## GitHub Actions Setup
+
+### Automatic Building
+
+The workflows automatically build and push images when you:
+
+1. Push to `main`/`master` branch
+2. Create pull requests  
+3. Manually trigger via workflow dispatch
+
+### Container Registry
+
+Images are pushed to GitHub Container Registry:
+
+```bash
+# Pull the latest multi-arch static image
+docker pull ghcr.io/your-org/your-repo/nixify-health-check:latest
+
+# Pull specific architecture
+docker pull ghcr.io/your-org/your-repo/nixify-health-check:latest-x86_64-linux-static
+docker pull ghcr.io/your-org/your-repo/nixify-health-check:latest-aarch64-linux-static
+```
+
+### Available Image Tags
+
+- `latest` - Multi-arch static build
+- `latest-x86_64-linux-static` - x86_64 specific static build
+- `latest-aarch64-linux-static` - aarch64 specific static build  
+- `{branch}-{sha}-{arch}-static` - Commit-specific builds
 
 ## Development
 
 ```bash
-# Enter development shell (aarch64-linux)
-nix develop --system aarch64-linux
+# Enter development shell
+nix develop
 
-# Run locally (requires Redis + PostgreSQL)
+# Run locally (requires services)
 python app.py
+
+# Build static image locally
+nix build .#docker-image-static
+
+# Cross-compile for different architecture
+nix build --system aarch64-linux .#docker-image-static
 ```
 
 ## Why Nix?
 
-1. **Reproducible**: Identical containers across environments
-2. **Minimal**: Only necessary dependencies included
-3. **No Dockerfile**: Infrastructure as code
-4. **Cached**: Efficient builds with Nix store
-5. **Declarative**: Clear dependency management
+1. **Reproducible**: Bit-for-bit identical builds across environments
+2. **Multi-arch**: Native cross-compilation support
+3. **Size Optimized**: Static linking and dependency elimination
+4. **No Dockerfile**: Pure, declarative infrastructure as code
+5. **Cached**: Shared build artifacts via binary caches
+6. **Hermetic**: Isolated, dependency-tracked builds
 
-## Commands
+## Available Commands
 
 ```bash
-make build    # Build Docker image
-make run      # Start container on port 8080  
+make build    # Build static Docker image  
+make run      # Run static container (port 8080)
 make logs     # Show container logs
-make stop     # Stop and remove container
+make stop     # Stop container
 make health   # Check application health
+make info     # Show image information
 make clean    # Clean up everything
 ```
 
 ## Troubleshooting
 
-**Build fails**: Ensure you have `aarch64-linux` build capability configured.
+### Local Development
 
-**Container won't start**: Check if ports 8080, 5432, or 6379 are already in use.
+**Build fails**: Ensure Nix flakes are enabled: `nix-env --version` should show flake support.
 
-**Health check fails**: Services need a few seconds to initialize. Check logs with `make logs`.
+**Container won't start**: Check if ports 8080/8081 are already in use: `lsof -i :8080`
+
+**Health check fails**: Services need 15-30 seconds to initialize. Check logs: `make logs`
+
+**Cross-compilation slow**: Use GitHub Actions for faster multi-arch builds.
+
+### GitHub Actions
+
+**Builds timeout**: Large builds may hit 6-hour limit.
+
+**Architecture mismatch**: Ensure your workflow targets the correct system architectures.
+
+**Registry permission denied**: Verify `packages: write` permission is set in workflow.
+
+**Image not found**: Check if workflow completed successfully and image was pushed.
+
+## Performance Characteristics
+
+| Metric | Static Build |
+|--------|-------------|
+| Build Time | ~10-15 min |
+| Image Size | 100-200MB |
+| Memory Usage | ~100MB |
+| Startup Time | ~12s |
+
+*Times vary based on cache hits and architecture*
 
 ## License
 

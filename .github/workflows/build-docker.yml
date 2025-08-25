@@ -1,0 +1,193 @@
+name: Build Static ARM64 Docker Image
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "docker-redis-postgres-minimal-static.nix"
+      - "flake.nix"
+      - "app.py"
+      - ".github/workflows/build-docker.yml"
+  pull_request:
+    branches: [main, master]
+    paths:
+      - "docker-redis-postgres-minimal-static.nix"
+      - "flake.nix"
+      - "app.py"
+      - ".github/workflows/build-docker.yml"
+  workflow_dispatch:
+    inputs:
+      push_image:
+        description: "Push image to registry"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/nixify-health-check
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nix
+        uses: cachix/install-nix-action@v25
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            builders-use-substitutes = true
+            # The following substituters and trusted-public-keys will be extended by cachix/cachix-action
+            substituters = https://cache.nixos.org/ https://nix-community.cachix.org
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+            max-jobs = 16
+            cores = 0
+            keep-going = true
+            build-users-group = nixbld
+
+      - name: Setup Cachix (Nix Community Cache)
+        # This step pulls from the public nix-community cache
+        uses: cachix/cachix-action@v14
+        with:
+          name: nix-community
+          skipPush: true # Do not push our builds to the public community cache
+
+      - name: Setup Cachix (User's Public Cache)
+        # This step configures the 'tellmey18' public Cachix cache.
+        # It enables pushing build results to this public cache for faster subsequent builds
+        # and sharing with others.
+        # The 'CACHIX_AUTH_TOKEN' secret is required to authenticate and push to this cache.
+        uses: cachix/cachix-action@v14
+        with:
+          name: tellmey18
+          authToken: "${{ secrets.CACHIX_SIGNING_KEY}}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Log in to Container Registry
+        # Only log in if we intend to push the image
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || inputs.push_image)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest-aarch64-linux-static,enable={{is_default_branch}}
+            type=ref,event=branch,suffix=-aarch64-linux-static
+            type=sha,prefix=sha-,suffix=-aarch64-linux-static
+          labels: |
+            org.opencontainers.image.title=Nixify Health Check Static (aarch64-linux)
+            org.opencontainers.image.description=Static Docker container with Redis, PostgreSQL, Garage S3, and Flask app built with Nix musl for aarch64-linux
+            org.opencontainers.image.vendor=ohcnetwork
+
+      - name: Build static components in parallel
+        id: build-components
+        run: |
+          echo "Building minimal static components in parallel for aarch64-linux..."
+          echo "Runner: ${{ runner.os }}-${{ runner.arch }}"
+          echo "Available cores: $(nproc)"
+          echo "Memory: $(free -h | grep Mem | awk '{print $2}')"
+
+          # Show Nix configuration for debugging
+          nix show-config | grep -E "(system|max-jobs|cores|substituters)"
+
+          # Start timing
+          START_TIME=$(date +%s)
+          echo "Starting parallel Nix builds at $(date)"
+
+          # Build all minimal components in parallel for maximum speed
+          echo "Building ultra-minimal static components (no tests, minimal features)..."
+          nix build \
+            --system aarch64-linux \
+            --print-build-logs \
+            --show-trace \
+            --max-jobs 16 \
+            --cores 0 \
+            --keep-going \
+            --no-link \
+            .#postgres-static \
+            .#redis-static \
+            .#garage-static \
+            .#python-env \
+            .#runtime-tools &
+
+          # Wait for all parallel builds to complete
+          wait
+
+          # Calculate build time
+          END_TIME=$(date +%s)
+          BUILD_TIME=$((END_TIME - START_TIME))
+          echo "Component builds completed in ${BUILD_TIME} seconds"
+          echo "Components built successfully, proceeding to final Docker image..."
+
+      - name: Build final Docker image
+        id: build-image
+        run: |
+          # Build the final Docker image (this will be fast since components are cached)
+          echo "Building final ultra-minimal static Docker image..."
+
+          # Start timing
+          START_TIME=$(date +%s)
+
+          nix build \
+            --system aarch64-linux \
+            --print-build-logs \
+            --show-trace \
+            --max-jobs 16 \
+            --cores 0 \
+            --no-link \
+            .#docker-image-static
+
+          # Calculate build time
+          END_TIME=$(date +%s)
+          BUILD_TIME=$((END_TIME - START_TIME))
+          echo "Docker image built in ${BUILD_TIME} seconds"
+
+          # Load the image into Docker daemon
+          echo "Loading static image into Docker..."
+          docker load < result
+
+          # Get the image name and tag it properly
+          ORIGINAL_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep nixify-health-check | head -1)
+          echo "Original image: $ORIGINAL_IMAGE"
+
+          # Tag the image with metadata
+          echo "Tagging image with metadata..."
+          while IFS= read -r tag; do
+            if [[ -n "$tag" ]]; then
+              echo "Tagging image as: $tag"
+              docker tag "$ORIGINAL_IMAGE" "$tag"
+            fi
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+      - name: Push static Docker image
+        # Only push if it's not a pull request and it's on main/master or push_image is explicitly true
+        if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || inputs.push_image)
+        run: |
+          echo "Pushing static Docker images for aarch64-linux..."
+          while IFS= read -r tag; do
+            if [[ -n "$tag" ]]; then
+              echo "Pushing: $tag"
+              docker push "$tag" || echo "Failed to push $tag"
+            fi
+          done <<< "${{ steps.meta.outputs.tags }}"
