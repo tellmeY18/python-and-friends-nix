@@ -16,31 +16,6 @@
         docker-image = pkgs.callPackage ./docker-redis-postgres-minimal.nix {};
       };
 
-      devShells.${system}.default = pkgs.mkShell {
-        buildInputs = with pkgs; [
-          nix
-          git
-          docker
-          (python3.withPackages (ps: with ps; [
-            flask
-            psycopg2
-            redis
-          ]))
-          postgresql
-          redis
-        ];
 
-        shellHook = ''
-          echo "Nixify Health Check Development Environment (aarch64-linux)"
-          echo ""
-          echo "Available commands:"
-          echo "  nix build                   - Build Docker image"
-          echo "  make build                  - Build and run container"
-          echo "  python app.py               - Run app locally"
-          echo ""
-        '';
-      };
-
-      checks.${system}.docker-image = self.packages.${system}.docker-image;
     };
 }
