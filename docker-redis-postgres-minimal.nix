@@ -38,7 +38,7 @@ EOF
     chmod 755 $out/data/redis
   '';
 
-  # Python environment with required packages
+  # Minimal Python environment with required packages
   pythonEnv = pkgs.python3.withPackages (ps: with ps; [
     flask
     psycopg2
@@ -119,6 +119,7 @@ pkgs.dockerTools.buildLayeredImage {
   name = "nixify-health-check";
   tag = "latest";
 
+  # Use minimal set of standard packages
   contents = with pkgs; [
     postgresql
     redis
@@ -148,6 +149,29 @@ pkgs.dockerTools.buildLayeredImage {
 
     # Ensure proper directory structure exists
     mkdir -p data/postgres data/redis tmp var/run var/log
+
+    # Clean up unnecessary files without touching Nix store structure
+    echo "Cleaning up unnecessary files..."
+
+    # Remove documentation, development files, and cache files
+    rm -rf nix/store/*/share/{man,doc,info,locale,bash-completion,zsh,fish,applications,icons,pixmaps,mime}
+    rm -rf nix/store/*/lib/{systemd,udev,perl*,cmake}
+    rm -rf nix/store/*/include nix/store/*/lib/pkgconfig
+    rm -rf nix/store/*/share/postgresql/{extension,contrib}
+
+    # Remove Python cache and test files
+    find . -name "*.pyc" -o -name "*.pyo" -o -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+    find . -path "*/test*" -o -path "*/site-packages/pip*" -o -path "*/site-packages/wheel*" -o -path "*/site-packages/setuptools*" -exec rm -rf {} + 2>/dev/null || true
+
+    # Remove unnecessary binaries
+    find . -name "pg_*" -o -name "psql*" -o -name "redis-cli*" -o -name "redis-benchmark*" -o -name "redis-check-*" -o -name "redis-sentinel*" -exec rm -f {} + 2>/dev/null || true
+    find . -name "perl*" -o -name "*.debug" -o -name "*.la" -o -name "*.a" -exec rm -f {} + 2>/dev/null || true
+
+    # Strip binaries and remove empty directories
+    find . -type f -executable -exec strip --strip-unneeded {} + 2>/dev/null || true
+    find . -type d -empty -delete 2>/dev/null || true
+
+    echo "Image optimization completed"
   '';
 
   config = {
@@ -167,5 +191,6 @@ pkgs.dockerTools.buildLayeredImage {
     User = "root";  # Start as root to manage permissions, then drop to service users
   };
 
-  maxLayers = 10;
+  # Optimize layers for better caching and smaller size
+  maxLayers = 25;
 }
