@@ -34,15 +34,15 @@ let
       chown -R care:care /home/care/.cache
 
       # Install pipenv and dependencies as care user (without --user flag)
-      setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care PIP_CACHE_DIR=/home/care/.cache/pip python -m pip install pipenv
+      setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PIP_CACHE_DIR=/home/care/.cache/pip python -m pip install pipenv
 
       # Install from Pipfile.lock (production dependencies only)
-      setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care PIP_CACHE_DIR=/home/care/.cache/pip PIPENV_VENV_IN_PROJECT=1 /home/care/.local/bin/pipenv install --system --deploy --ignore-pipfile
+      setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PIP_CACHE_DIR=/home/care/.cache/pip PIPENV_VENV_IN_PROJECT=1 /home/care/.local/bin/pipenv install --system --deploy --ignore-pipfile
 
       # Install plugins if available
       if [ -f install_plugins.py ]; then
         echo "Installing Care plugins..."
-        setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care python install_plugins.py
+        setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care python install_plugins.py
       fi
 
       touch /app/.deps_installed
@@ -58,24 +58,24 @@ let
     export HOME=/home/care
 
     # Run Django setup as care user
-    setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py migrate --noinput
-    setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py compilemessages -v 0 || echo "Message compilation may have failed"
-    setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py collectstatic --noinput
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py migrate --noinput
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py compilemessages -v 0 || echo "Message compilation may have failed"
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py collectstatic --noinput
 
     # Sync permissions and roles if available
-    setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_permissions_roles || echo "Permissions sync may have failed"
-    setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_valueset || echo "Valueset sync may have failed"
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_permissions_roles || echo "Permissions sync may have failed"
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_valueset || echo "Valueset sync may have failed"
   '';
 
   startCelery = ''
     echo "Starting Celery worker and beat as care user..."
-    setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care celery -A config.celery_app worker -B --loglevel=INFO --detach
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care celery -A config.celery_app worker -B --loglevel=INFO --detach
   '';
 
   startDjango = ''
     echo "🚀 Starting Care Django application as care user..."
     cd /app
-    exec setpriv --reuid=996 --regid=996 --clear-groups --init-groups env HOME=/home/care gunicorn config.wsgi:application \
+    exec setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care gunicorn config.wsgi:application \
       --bind 0.0.0.0:8000 \
       --workers 4 \
       --worker-class sync \
