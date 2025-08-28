@@ -10,6 +10,7 @@ root:x:0:0:root:/root:/bin/bash
 postgres:x:999:999:PostgreSQL:/var/lib/postgresql:/bin/bash
 redis:x:998:998:Redis:/var/lib/redis:/bin/bash
 garage:x:997:997:Garage:/var/lib/garage:/bin/bash
+care:x:996:996:Care Application:/app:/bin/bash
 EOF
 
     # Create group file
@@ -18,6 +19,7 @@ root:x:0:
 postgres:x:999:
 redis:x:998:
 garage:x:997:
+care:x:996:
 EOF
 
     # Create shadow file (required for some operations)
@@ -26,6 +28,7 @@ root:!:1::::::
 postgres:!:1::::::
 redis:!:1::::::
 garage:!:1::::::
+care:!:1::::::
 EOF
 
     chmod 640 $out/etc/shadow
@@ -35,21 +38,18 @@ EOF
   baseDirectories = pkgs.runCommand "base-directories" {
     nativeBuildInputs = [ pkgs.coreutils ];
   } ''
-    mkdir -p $out/data/postgres $out/data/redis $out/data/garage $out/tmp $out/var/run $out/var/log
-    chmod 755 $out/data $out/tmp $out/var/run $out/var/log
+    mkdir -p $out/data/postgres $out/data/redis $out/data/garage $out/tmp $out/var/run $out/var/log $out/app/staticfiles $out/app/media
+    chmod 755 $out/data $out/tmp $out/var/run $out/var/log $out/app
     chmod 700 $out/data/postgres
-    chmod 755 $out/data/redis
-    chmod 755 $out/data/garage
+    chmod 755 $out/data/redis $out/data/garage $out/app/staticfiles $out/app/media
   '';
 
-  # Minimal Python environment with required packages
-  pythonEnv = pkgs.python3.withPackages (ps: with ps; [
-    flask
-    psycopg2
-    redis
-    boto3
-    werkzeug
-    jinja2
+  # Python environment with basic tools for pip installation
+  pythonEnv = pkgs.python313.withPackages (ps: with ps; [
+    pip
+    setuptools
+    wheel
+    virtualenv
   ]);
 
   # PostgreSQL configuration files
@@ -57,7 +57,17 @@ EOF
     port = 5432
     listen_addresses = '127.0.0.1'
     max_connections = 100
-    shared_buffers = 32MB
+    shared_buffers = 128MB
+    effective_cache_size = 256MB
+    maintenance_work_mem = 64MB
+    checkpoint_completion_target = 0.9
+    wal_buffers = 16MB
+    default_statistics_target = 100
+    random_page_cost = 1.1
+    effective_io_concurrency = 200
+    work_mem = 4MB
+    min_wal_size = 1GB
+    max_wal_size = 4GB
     log_destination = 'stderr'
     logging_collector = off
     log_statement = 'none'
@@ -100,17 +110,54 @@ EOF
     metrics_token = "changeme"
   '';
 
+  # Install Typst binary (required by Care)
+  typstInstaller = pkgs.writeShellScript "install-typst" ''
+    set -euo pipefail
+    TYPST_VERSION="0.12.0"
+    ARCH=$(uname -m)
+    if [ "$ARCH" = "x86_64" ]; then
+      ARCH="x86_64"
+    elif [ "$ARCH" = "aarch64" ]; then
+      ARCH="aarch64"
+    else
+      echo "Unsupported architecture: $ARCH"
+      exit 1
+    fi
+
+    TYPST_URL="https://github.com/typst/typst/releases/download/v$TYPST_VERSION/typst-$ARCH-unknown-linux-musl.tar.xz"
+
+    mkdir -p /usr/local/bin
+    cd /tmp
+    wget -q "$TYPST_URL" -O typst.tar.xz
+    tar -xf typst.tar.xz
+    cp typst-$ARCH-unknown-linux-musl/typst /usr/local/bin/
+    chmod +x /usr/local/bin/typst
+    rm -rf typst.tar.xz typst-$ARCH-unknown-linux-musl
+    echo "Typst installed successfully"
+  '';
+
   # Startup script that properly handles users
   startScript = pkgs.writeShellApplication {
     name = "start-services";
-    runtimeInputs = with pkgs; [ postgresql redis garage_2 coreutils shadow util-linux ];
+    runtimeInputs = with pkgs; [
+      postgresql_15 redis garage_2 pythonEnv coreutils shadow util-linux
+      gnused gawk gnugrep procps wget gnutar xz findutils git
+    ];
     text = ''
       set -euo pipefail
+
+      echo "🏥 Starting Care Production Environment..."
+
+      # Install Typst if not present
+      if ! command -v typst >/dev/null 2>&1; then
+        echo "Installing Typst..."
+        ${typstInstaller}
+      fi
 
       echo "Setting up directories and permissions..."
 
       # Ensure directories exist with correct permissions
-      mkdir -p /data/postgres /data/redis /data/garage/meta /data/garage/data /tmp /var/run /var/log
+      mkdir -p /data/postgres /data/redis /data/garage/meta /data/garage/data /tmp /var/run /var/log /app/staticfiles /app/media
 
       # Set ownership for postgres data directory
       chown postgres:postgres /data/postgres
@@ -126,6 +173,10 @@ EOF
       chown garage:garage /data/garage/data
       chmod 755 /data/garage /data/garage/meta /data/garage/data
 
+      # Set ownership for Care app directories
+      chown -R care:care /app
+      chmod 755 /app/staticfiles /app/media
+
       # Fix /tmp permissions for PostgreSQL socket
       chmod 1777 /tmp
       chown root:root /tmp
@@ -133,7 +184,7 @@ EOF
       # Initialize PostgreSQL if needed (as postgres user)
       if [ ! -f /data/postgres/PG_VERSION ]; then
         echo "Initializing PostgreSQL as postgres user..."
-        setpriv --reuid=999 --regid=999 --clear-groups ${pkgs.postgresql}/bin/initdb -D /data/postgres --auth=trust
+        setpriv --reuid=999 --regid=999 --clear-groups ${pkgs.postgresql_15}/bin/initdb -D /data/postgres --auth=trust
 
         # Copy configuration files and set ownership
         cp ${postgresqlConf} /data/postgres/postgresql.conf
@@ -151,7 +202,7 @@ EOF
       fi
 
       echo "Starting PostgreSQL as postgres user..."
-      setpriv --reuid=999 --regid=999 --clear-groups ${pkgs.postgresql}/bin/postgres -D /data/postgres &
+      setpriv --reuid=999 --regid=999 --clear-groups ${pkgs.postgresql_15}/bin/postgres -D /data/postgres &
 
       echo "Starting Redis as redis user..."
       setpriv --reuid=998 --regid=998 --clear-groups ${pkgs.redis}/bin/redis-server --dir /data/redis --bind 127.0.0.1 --port 6379 &
@@ -161,6 +212,32 @@ EOF
 
       echo "Waiting for services to start..."
       sleep 8
+
+      # Wait for PostgreSQL to be ready
+      echo "Waiting for PostgreSQL to be ready..."
+      for i in {1..30}; do
+        if ${pkgs.postgresql_15}/bin/pg_isready -h 127.0.0.1 -p 5432 -U postgres; then
+          echo "PostgreSQL is ready!"
+          break
+        fi
+        echo "Waiting for PostgreSQL... attempt $i"
+        sleep 2
+      done
+
+      # Wait for Redis to be ready
+      echo "Waiting for Redis to be ready..."
+      for i in {1..30}; do
+        if ${pkgs.redis}/bin/redis-cli -h 127.0.0.1 -p 6379 ping | grep -q PONG; then
+          echo "Redis is ready!"
+          break
+        fi
+        echo "Waiting for Redis... attempt $i"
+        sleep 2
+      done
+
+      # Create database for Care
+      echo "Creating Care database..."
+      ${pkgs.postgresql_15}/bin/createdb -h 127.0.0.1 -U postgres care || echo "Database 'care' may already exist"
 
       # Initialize Garage layout and keys
       if [ ! -f /data/garage/.initialized ]; then
@@ -187,10 +264,10 @@ EOF
 
           # Generate new S3 credentials and save them
           echo "Creating S3 credentials..."
-          sleep 2  # Give Garage time to fully initialize
+          sleep 2
 
           # Try to create key with timeout
-          timeout 30 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml key create default-key > /tmp/key_output.txt 2>&1 &
+          timeout 30 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml key create care-key > /tmp/key_output.txt 2>&1 &
           KEY_PID=$!
 
           if wait $KEY_PID; then
@@ -207,13 +284,16 @@ EOF
               echo "AWS_ACCESS_KEY_ID=$ACCESS_KEY" > /data/garage/credentials.env
               echo "AWS_SECRET_ACCESS_KEY=$SECRET_KEY" >> /data/garage/credentials.env
               chmod 600 /data/garage/credentials.env
+              chown garage:garage /data/garage/credentials.env
 
-              # Create bucket and set permissions
-              echo "Creating bucket..."
-              timeout 15 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml bucket create default-bucket || echo "Bucket may already exist"
+              # Create buckets and set permissions
+              echo "Creating buckets..."
+              timeout 15 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml bucket create patient-bucket || echo "Patient bucket may already exist"
+              timeout 15 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml bucket create facility-bucket || echo "Facility bucket may already exist"
               sleep 1
               echo "Setting bucket permissions..."
-              timeout 15 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml bucket allow default-bucket --read --write --key default-key || echo "Permission setting may have failed"
+              timeout 15 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml bucket allow patient-bucket --read --write --key care-key || echo "Patient bucket permission setting may have failed"
+              timeout 15 ${pkgs.garage_2}/bin/garage -c /data/garage/garage.toml bucket allow facility-bucket --read --write --key care-key || echo "Facility bucket permission setting may have failed"
 
               echo "Garage setup completed successfully"
             else
@@ -238,40 +318,146 @@ EOF
         . /data/garage/credentials.env
         export AWS_ACCESS_KEY_ID
         export AWS_SECRET_ACCESS_KEY
+        export BUCKET_KEY="$AWS_ACCESS_KEY_ID"
+        export BUCKET_SECRET="$AWS_SECRET_ACCESS_KEY"
         echo "Loaded credentials for key: $AWS_ACCESS_KEY_ID"
       fi
 
-      echo "Starting Flask application..."
+      # Switch to care user for application setup
+      echo "Setting up Care Django application..."
       cd /app
-      exec ${pythonEnv}/bin/python app.py
+
+      # Install Python dependencies as care user
+      if [ ! -f /app/.deps_installed ]; then
+        echo "Installing Python dependencies from Pipfile.lock..."
+
+        # Create home directory for care user
+        mkdir -p /home/care/.local/bin
+        chown -R care:care /home/care
+
+        # Install pipenv and dependencies
+        setpriv --reuid=996 --regid=996 --clear-groups python -m pip install --user pipenv
+
+        # Install from Pipfile.lock (production dependencies only)
+        export PIPENV_VENV_IN_PROJECT=1
+        setpriv --reuid=996 --regid=996 --clear-groups /home/care/.local/bin/pipenv install --system --deploy --ignore-pipfile
+
+        # Install plugins if available
+        if [ -f install_plugins.py ]; then
+          echo "Installing Care plugins..."
+          setpriv --reuid=996 --regid=996 --clear-groups python install_plugins.py
+        fi
+
+        touch /app/.deps_installed
+        chown care:care /app/.deps_installed
+      fi
+
+      # Run Django setup as care user
+      echo "Running Django migrations and setup..."
+      export DJANGO_SETTINGS_MODULE=config.settings.production
+
+      setpriv --reuid=996 --regid=996 --clear-groups python manage.py migrate --noinput
+      setpriv --reuid=996 --regid=996 --clear-groups python manage.py compilemessages -v 0 || echo "Message compilation may have failed"
+      setpriv --reuid=996 --regid=996 --clear-groups python manage.py collectstatic --noinput
+
+      # Sync permissions and roles if available
+      setpriv --reuid=996 --regid=996 --clear-groups python manage.py sync_permissions_roles || echo "Permissions sync may have failed"
+      setpriv --reuid=996 --regid=996 --clear-groups python manage.py sync_valueset || echo "Valueset sync may have failed"
+
+      echo "Starting Celery worker and beat as care user..."
+      setpriv --reuid=996 --regid=996 --clear-groups celery -A config.celery_app worker -B --loglevel=INFO --detach
+
+      echo "🚀 Starting Care Django application as care user..."
+      cd /app
+      exec setpriv --reuid=996 --regid=996 --clear-groups gunicorn config.wsgi:application \
+        --bind 0.0.0.0:8000 \
+        --workers 4 \
+        --worker-class sync \
+        --worker-connections 1000 \
+        --max-requests 1000 \
+        --max-requests-jitter 50 \
+        --preload \
+        --timeout 30 \
+        --keep-alive 5 \
+        --log-level info \
+        --access-logfile - \
+        --error-logfile -
     '';
   };
 
 in
 pkgs.dockerTools.buildLayeredImage {
-  name = "nixify-health-check";
+  name = "care-production";
   tag = "latest";
 
-  # Use minimal set of standard packages
+  # Use required system packages for build and runtime
   contents = with pkgs; [
-    postgresql
-    redis
-    garage_2
-    pythonEnv
+    # Core system utilities
     coreutils
     shadow
     bash
     util-linux
     gawk
     gnugrep
+    gnused
     procps
+    findutils
+    gzip
+    gnutar
+    xz
+
+    # Network utilities
+    wget
+    curl
+
+    # Build dependencies (equivalent to build-essential)
+    gcc
+    gnumake
+    pkg-config
+    git
+
+    # Runtime dependencies
+    gettext
+
+    # Database and services
+    postgresql_15
+    redis
+    garage_2
+
+    # Python environment
+    pythonEnv
+
+    # System libraries for pip packages (runtime deps)
+    zlib
+    libjpeg          # For Pillow
+    libpq            # For psycopg
+    gmp              # For some cryptography packages
+    openssl          # For SSL/TLS
+    libffi           # For cffi-based packages
+
+    # Directory structure
     baseDirectories
   ];
 
   extraCommands = ''
-    # Copy application
+    # Copy Care application
     mkdir -p app
-    cp ${./app.py} app/app.py
+
+    # Copy the entire care directory
+    if [ -d "${./care}" ]; then
+      echo "Copying Care application source..."
+      cp -r ${./care}/* app/
+
+      # Remove git directory and other unnecessary files
+      rm -rf app/.git app/.github app/.vscode app/.devcontainer
+      rm -rf app/docs app/data/sample_data
+
+      # Ensure essential files are present
+      chmod +x app/manage.py
+    else
+      echo "ERROR: Care source directory not found!"
+      exit 1
+    fi
 
     # Copy user/group files from our users derivation
     mkdir -p etc
@@ -284,8 +470,11 @@ pkgs.dockerTools.buildLayeredImage {
     cp ${startScript}/bin/start-services usr/local/bin/
     chmod +x usr/local/bin/start-services
 
+    # Create home directory for care user
+    mkdir -p home/care
+
     # Ensure proper directory structure exists
-    mkdir -p data/postgres data/redis data/garage/meta data/garage/data tmp var/run var/log
+    mkdir -p data/postgres data/redis data/garage/meta data/garage/data tmp var/run var/log app/staticfiles app/media
 
     # Clean up unnecessary files without touching Nix store structure
     echo "Cleaning up unnecessary files..."
@@ -301,30 +490,69 @@ pkgs.dockerTools.buildLayeredImage {
     find . -path "*/test*" -o -path "*/site-packages/pip*" -o -path "*/site-packages/wheel*" -o -path "*/site-packages/setuptools*" -exec rm -rf {} + 2>/dev/null || true
 
     # Remove unnecessary binaries
-    find . -name "pg_*" -o -name "psql*" -o -name "redis-cli*" -o -name "redis-benchmark*" -o -name "redis-check-*" -o -name "redis-sentinel*" -exec rm -f {} + 2>/dev/null || true
+    find . -name "pg_*" ! -name "pg_isready" ! -name "pg_dump" ! -name "pg_restore" -exec rm -f {} + 2>/dev/null || true
+    find . -name "redis-cli*" -o -name "redis-benchmark*" -o -name "redis-check-*" -o -name "redis-sentinel*" -exec rm -f {} + 2>/dev/null || true
     find . -name "perl*" -o -name "*.debug" -o -name "*.la" -o -name "*.a" -exec rm -f {} + 2>/dev/null || true
 
     # Strip binaries and remove empty directories
     find . -type f -executable -exec strip --strip-unneeded {} + 2>/dev/null || true
     find . -type d -empty -delete 2>/dev/null || true
 
-    echo "Image optimization completed"
+    echo "Care production image optimization completed"
   '';
 
   config = {
     Cmd = [ "/usr/local/bin/start-services" ];
     ExposedPorts = {
-      "80/tcp" = {};
+      "8000/tcp" = {};
     };
     Env = [
-      "POSTGRES_DB=postgres"
+      # Django settings
+      "DJANGO_SETTINGS_MODULE=config.settings.production"
+      "DJANGO_DEBUG=false"
+      "IS_PRODUCTION=true"
+
+      # Database
+      "DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/care"
+      "POSTGRES_HOST=127.0.0.1"
+      "POSTGRES_PORT=5432"
       "POSTGRES_USER=postgres"
-      "REDIS_HOST=127.0.0.1"
-      "REDIS_PORT=6379"
-      "PG_HOST=127.0.0.1"
-      "PG_PORT=5432"
-      "GARAGE_S3_ENDPOINT=http://127.0.0.1:3900"
-      "GARAGE_S3_REGION=garage"
+      "POSTGRES_PASSWORD=postgres"
+      "POSTGRES_DB=care"
+
+      # Redis/Celery
+      "REDIS_URL=redis://127.0.0.1:6379/0"
+      "CELERY_BROKER_URL=redis://127.0.0.1:6379/0"
+
+      # S3/Storage (will be overridden by Garage credentials)
+      "BUCKET_REGION=garage"
+      "BUCKET_ENDPOINT=http://127.0.0.1:3900"
+      "BUCKET_EXTERNAL_ENDPOINT=http://127.0.0.1:3900"
+      "FILE_UPLOAD_BUCKET=patient-bucket"
+      "FACILITY_S3_BUCKET=facility-bucket"
+
+      # Security
+      "SECRET_KEY=care-production-secret-key-change-in-production"
+      "CORS_ALLOWED_ORIGINS=[]"
+      "CORS_ALLOWED_ORIGIN_REGEXES=[]"
+      "DJANGO_SECURE_SSL_REDIRECT=false"
+
+      # Other Care-specific settings
+      "USE_SMS=false"
+      "SEND_SMS_NOTIFICATION=false"
+      "TYPST_VERSION=0.12.0"
+
+      # Python settings
+      "PYTHONPATH=/app"
+      "PYTHONUNBUFFERED=1"
+      "PYTHONDONTWRITEBYTECODE=1"
+
+      # Pipenv settings
+      "PIPENV_VENV_IN_PROJECT=1"
+
+      # Locale
+      "LANG=en_US.UTF-8"
+      "LC_ALL=C.UTF-8"
     ];
     WorkingDir = "/app";
     User = "root";  # Start as root to manage permissions, then drop to service users
