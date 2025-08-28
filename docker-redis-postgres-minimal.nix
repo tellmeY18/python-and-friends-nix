@@ -1,4 +1,4 @@
-{ pkgs }:
+{ pkgs, careSource }:
 let
   # Create system users and groups declaratively
   users = pkgs.runCommand "users-setup" { } ''
@@ -440,24 +440,18 @@ pkgs.dockerTools.buildLayeredImage {
   ];
 
   extraCommands = ''
-    # Copy Care application
+    # Copy Care application from flake input
     mkdir -p app
 
-    # Copy the entire care directory
-    if [ -d "${./care}" ]; then
-      echo "Copying Care application source..."
-      cp -r ${./care}/* app/
+    echo "Copying Care application source from flake input..."
+    cp -r ${careSource}/* app/
 
-      # Remove git directory and other unnecessary files
-      rm -rf app/.git app/.github app/.vscode app/.devcontainer
-      rm -rf app/docs app/data/sample_data
+    # Remove git directory and other unnecessary files
+    rm -rf app/.git app/.github app/.vscode app/.devcontainer
+    rm -rf app/docs app/data/sample_data
 
-      # Ensure essential files are present
-      chmod +x app/manage.py
-    else
-      echo "ERROR: Care source directory not found!"
-      exit 1
-    fi
+    # Ensure essential files are present
+    chmod +x app/manage.py
 
     # Copy user/group files from our users derivation
     mkdir -p etc

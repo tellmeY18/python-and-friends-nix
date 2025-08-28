@@ -3,17 +3,24 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    care.url = "github:ohcnetwork/care";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, care }:
     let
-      system = "aarch64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      supportedSystems = [ "aarch64-linux" "x86_64-linux" ];
+      forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
-      packages.${system}.default = pkgs.callPackage ./docker-redis-postgres-minimal.nix {};
-
-      # Alias for easier access
-      defaultPackage.${system} = self.packages.${system}.default;
+      packages = forAllSystems (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+        in
+        {
+          default = pkgs.callPackage ./docker-redis-postgres-minimal.nix {
+            careSource = care;
+          };
+        }
+      );
     };
 }
