@@ -22,10 +22,10 @@ let
     unix_socket_directories = '/tmp'
     log_timezone = 'UTC'
     timezone = 'UTC'
-    lc_messages = 'en_US.utf8'
-    lc_monetary = 'en_US.utf8'
-    lc_numeric = 'en_US.utf8'
-    lc_time = 'en_US.utf8'
+    lc_messages = 'C.UTF-8'
+    lc_monetary = 'C.UTF-8'
+    lc_numeric = 'C.UTF-8'
+    lc_time = 'C.UTF-8'
     default_text_search_config = 'pg_catalog.english'
   '';
 
@@ -46,7 +46,7 @@ let
     # Initialize PostgreSQL if needed (as postgres user)
     if [ ! -f /data/postgres/PG_VERSION ]; then
       echo "Initializing PostgreSQL as postgres user..."
-      setpriv --reuid=999 --regid=999 --clear-groups ${pkgs.postgresql_15}/bin/initdb -D /data/postgres --auth=trust
+      setpriv --reuid=999 --regid=999 --clear-groups ${pkgs.postgresql_15}/bin/initdb -D /data/postgres --auth=trust --locale=C.UTF-8
 
       # Copy configuration files and set ownership
       cp ${postgresqlConf} /data/postgres/postgresql.conf
