@@ -17,32 +17,34 @@ let
     chmod 755 /app/staticfiles /app/media
 
     # Create home directory for care user
-    mkdir -p /home/care/.local/bin /home/care/.cache
+    mkdir -p /home/care
     chown -R care:care /home/care
 
-    # Install Python dependencies as care user
+    # Install Python dependencies in virtual environment
     if [ ! -f /app/.deps_installed ]; then
-      echo "Installing Python dependencies from Pipfile.lock..."
+      echo "Creating Python virtual environment and installing dependencies..."
 
-      # Set up environment for pip installation
-      export PIP_CACHE_DIR=/home/care/.cache/pip
-      export PIPENV_VENV_IN_PROJECT=1
+      # Create virtual environment
+      cd /app
+      python -m venv venv
+      chown -R care:care venv
+
+      # Activate venv and install dependencies as care user
       export HOME=/home/care
+      export PATH="/app/venv/bin:$PATH"
+      export VIRTUAL_ENV="/app/venv"
+      export PG_CONFIG="${pkgs.postgresql.pg_config}/bin/pg_config"
 
-      # Create cache directory with proper ownership
-      mkdir -p /home/care/.cache/pip
-      chown -R care:care /home/care/.cache
-
-      # Install pipenv and dependencies as care user (without --user flag)
-      setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PIP_CACHE_DIR=/home/care/.cache/pip python -m pip install pipenv
+      # Install pipenv in the virtual environment
+      setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="${pkgs.postgresql.pg_config}/bin:/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" PG_CONFIG="${pkgs.postgresql.pg_config}/bin/pg_config" pip install pipenv
 
       # Install from Pipfile.lock (production dependencies only)
-      setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PIP_CACHE_DIR=/home/care/.cache/pip PIPENV_VENV_IN_PROJECT=1 /home/care/.local/bin/pipenv install --system --deploy --ignore-pipfile
+      setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="${pkgs.postgresql.pg_config}/bin:/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" PG_CONFIG="${pkgs.postgresql.pg_config}/bin/pg_config" pipenv install --system --deploy --ignore-pipfile
 
       # Install plugins if available
       if [ -f install_plugins.py ]; then
         echo "Installing Care plugins..."
-        setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care python install_plugins.py
+        setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="${pkgs.postgresql.pg_config}/bin:/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" PG_CONFIG="${pkgs.postgresql.pg_config}/bin/pg_config" python install_plugins.py
       fi
 
       touch /app/.deps_installed
@@ -53,29 +55,35 @@ let
   setupDjango = ''
     echo "Running Django migrations and setup..."
 
-    # Set environment variables for Django
+    # Set environment variables for Django and virtual environment
     export DJANGO_SETTINGS_MODULE=config.settings.production
     export HOME=/home/care
+    export PATH="/app/venv/bin:$PATH"
+    export VIRTUAL_ENV="/app/venv"
 
-    # Run Django setup as care user
-    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py migrate --noinput
-    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py compilemessages -v 0 || echo "Message compilation may have failed"
-    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py collectstatic --noinput
+    # Run Django setup as care user with virtual environment
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" DJANGO_SETTINGS_MODULE=config.settings.production python manage.py migrate --noinput
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" DJANGO_SETTINGS_MODULE=config.settings.production python manage.py compilemessages -v 0 || echo "Message compilation may have failed"
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" DJANGO_SETTINGS_MODULE=config.settings.production python manage.py collectstatic --noinput
 
     # Sync permissions and roles if available
-    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_permissions_roles || echo "Permissions sync may have failed"
-    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_valueset || echo "Valueset sync may have failed"
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_permissions_roles || echo "Permissions sync may have failed"
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" DJANGO_SETTINGS_MODULE=config.settings.production python manage.py sync_valueset || echo "Valueset sync may have failed"
   '';
 
   startCelery = ''
     echo "Starting Celery worker and beat as care user..."
-    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care celery -A config.celery_app worker -B --loglevel=INFO --detach
+    export PATH="/app/venv/bin:$PATH"
+    export VIRTUAL_ENV="/app/venv"
+    setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" celery -A config.celery_app worker -B --loglevel=INFO --detach
   '';
 
   startDjango = ''
     echo "🚀 Starting Care Django application as care user..."
     cd /app
-    exec setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care gunicorn config.wsgi:application \
+    export PATH="/app/venv/bin:$PATH"
+    export VIRTUAL_ENV="/app/venv"
+    exec setpriv --reuid=996 --regid=996 --init-groups env HOME=/home/care PATH="/app/venv/bin:$PATH" VIRTUAL_ENV="/app/venv" gunicorn config.wsgi:application \
       --bind 0.0.0.0:8000 \
       --workers 4 \
       --worker-class sync \
@@ -131,6 +139,7 @@ in
     pkgs.zlib
     pkgs.libjpeg
     pkgs.libpq
+    pkgs.postgresql.pg_config
     pkgs.gmp
     pkgs.openssl
     pkgs.libffi
@@ -152,7 +161,7 @@ in
     "PYTHONPATH=/app"
     "PYTHONUNBUFFERED=1"
     "PYTHONDONTWRITEBYTECODE=1"
-    "PIPENV_VENV_IN_PROJECT=1"
+    "VIRTUAL_ENV=/app/venv"
     "LANG=en_US.UTF-8"
     "LC_ALL=C.UTF-8"
   ];
