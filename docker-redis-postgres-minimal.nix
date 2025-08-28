@@ -110,31 +110,7 @@ EOF
     metrics_token = "changeme"
   '';
 
-  # Install Typst binary (required by Care)
-  typstInstaller = pkgs.writeShellScript "install-typst" ''
-    set -euo pipefail
-    TYPST_VERSION="0.12.0"
-    ARCH=$(uname -m)
-    if [ "$ARCH" = "x86_64" ]; then
-      ARCH="x86_64"
-    elif [ "$ARCH" = "aarch64" ]; then
-      ARCH="aarch64"
-    else
-      echo "Unsupported architecture: $ARCH"
-      exit 1
-    fi
 
-    TYPST_URL="https://github.com/typst/typst/releases/download/v$TYPST_VERSION/typst-$ARCH-unknown-linux-musl.tar.xz"
-
-    mkdir -p /usr/local/bin
-    cd /tmp
-    wget -q "$TYPST_URL" -O typst.tar.xz
-    tar -xf typst.tar.xz
-    cp typst-$ARCH-unknown-linux-musl/typst /usr/local/bin/
-    chmod +x /usr/local/bin/typst
-    rm -rf typst.tar.xz typst-$ARCH-unknown-linux-musl
-    echo "Typst installed successfully"
-  '';
 
   # Startup script that properly handles users
   startScript = pkgs.writeShellApplication {
@@ -147,12 +123,6 @@ EOF
       set -euo pipefail
 
       echo "🏥 Starting Care Production Environment..."
-
-      # Install Typst if not present
-      if ! command -v typst >/dev/null 2>&1; then
-        echo "Installing Typst..."
-        ${typstInstaller}
-      fi
 
       echo "Setting up directories and permissions..."
 
@@ -435,6 +405,9 @@ pkgs.dockerTools.buildLayeredImage {
     openssl          # For SSL/TLS
     libffi           # For cffi-based packages
 
+    # Typst for document generation
+    typst
+
     # Directory structure
     baseDirectories
   ];
@@ -448,6 +421,7 @@ pkgs.dockerTools.buildLayeredImage {
 
     # Remove git directory and other unnecessary files
     rm -rf app/.git app/.github app/.vscode app/.devcontainer
+    chmod -R +w app/docs app/data/sample_data 2>/dev/null || true
     rm -rf app/docs app/data/sample_data
 
     # Ensure essential files are present
