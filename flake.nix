@@ -17,7 +17,7 @@
           pkgs = nixpkgs.legacyPackages.${system};
         in
         {
-          default = pkgs.callPackage ./docker-redis-postgres-minimal.nix {
+          default = pkgs.callPackage ./docker.nix {
             careSource = care;
           };
         }
