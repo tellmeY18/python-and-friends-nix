@@ -183,10 +183,10 @@ pkgs.dockerTools.buildLayeredImage {
     # Health check
     Healthcheck = {
       Test = [ "CMD-SHELL" "curl -f http://localhost:8000/api/v1/health/ || exit 1" ];
-      Interval = "30s";
-      Timeout = "10s";
+      Interval = 30000000000;  # 30s in nanoseconds
+      Timeout = 10000000000;   # 10s in nanoseconds
       Retries = 3;
-      StartPeriod = "120s";
+      StartPeriod = 120000000000;  # 120s in nanoseconds
     };
   };
 
